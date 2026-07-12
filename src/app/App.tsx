@@ -18,8 +18,12 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar,
 } from 'recharts';
+import UsersTab from './settings/UsersTab';
+import BrandLogo from './components/ui/BrandLogo';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import AuthLoginPage from './components/auth/LoginPage';
+import { authService, type AuthenticatedUser, isMockMode } from '../services/authService';
 
 // ============================================================
 // UTILITIES
@@ -241,7 +245,7 @@ function reducer(state: AppState, action: AppAction): AppState {
 type Route =
   | 'login' | 'overview' | 'vehicles' | 'drivers'
   | 'trips' | 'trips-new' | 'maintenance' | 'expenses'
-  | 'reports' | 'settings';
+  | 'reports' | 'settings' | 'my-trips';
 
 interface AppCtx {
   state: AppState;
@@ -252,10 +256,15 @@ interface AppCtx {
   setSidebarOpen: (v: boolean) => void;
   darkMode: boolean;
   toggleDarkMode: () => void;
+  user: AuthenticatedUser | null;
+  isAuthenticated: boolean;
+  authLoading: boolean;
+  login: (user: AuthenticatedUser) => void;
+  logout: () => void;
 }
 
-const AppContext = createContext<AppCtx>(null as unknown as AppCtx);
-const useApp = () => useContext(AppContext);
+export const AppContext = createContext<AppCtx>(null as unknown as AppCtx);
+export const useApp = () => useContext(AppContext);
 
 // ============================================================
 // CHART TOOLTIP STYLE HOOK
@@ -771,31 +780,31 @@ function PageHeader({
 // SIDEBAR
 // ============================================================
 
-interface NavItem { id: Route; label: string; icon: ReactNode; }
+interface NavItem { id: Route; label: string; icon: ReactNode; allowedRoles: string[]; }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'overview', label: 'Overview', icon: <LayoutDashboard size={16} /> },
-  { id: 'vehicles', label: 'Vehicles', icon: <Truck size={16} /> },
-  { id: 'drivers', label: 'Drivers', icon: <Users size={16} /> },
-  { id: 'trips', label: 'Trips', icon: <Route size={16} /> },
-  { id: 'maintenance', label: 'Maintenance', icon: <Wrench size={16} /> },
-  { id: 'expenses', label: 'Fuel & Expenses', icon: <Fuel size={16} /> },
-  { id: 'reports', label: 'Reports', icon: <BarChart3 size={16} /> },
+  { id: 'overview', label: 'Overview', icon: <LayoutDashboard size={16} />, allowedRoles: ['FLEET_MANAGER', 'DRIVER', 'FINANCIAL_ANALYST', 'SAFETY_OFFICER'] },
+  { id: 'vehicles', label: 'Vehicles', icon: <Truck size={16} />, allowedRoles: ['FLEET_MANAGER'] },
+  { id: 'drivers', label: 'Drivers', icon: <Users size={16} />, allowedRoles: ['FLEET_MANAGER', 'SAFETY_OFFICER'] },
+  { id: 'trips', label: 'Trips', icon: <Route size={16} />, allowedRoles: ['FLEET_MANAGER'] },
+  { id: 'my-trips', label: 'My Trips', icon: <Route size={16} />, allowedRoles: ['DRIVER'] },
+  { id: 'maintenance', label: 'Maintenance', icon: <Wrench size={16} />, allowedRoles: ['FLEET_MANAGER'] },
+  { id: 'expenses', label: 'Fuel & Expenses', icon: <Fuel size={16} />, allowedRoles: ['FLEET_MANAGER', 'FINANCIAL_ANALYST'] },
+  { id: 'reports', label: 'Reports', icon: <BarChart3 size={16} />, allowedRoles: ['FLEET_MANAGER', 'FINANCIAL_ANALYST', 'SAFETY_OFFICER'] },
 ];
 
 function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
-  const { route, navigate } = useApp();
+  const { route, navigate, user } = useApp();
+  const allowedItems = NAV_ITEMS.filter(item => user && item.allowedRoles.includes(user.role));
+
   return (
     <aside className={cn('flex flex-col h-full bg-sidebar border-r border-sidebar-border transition-all duration-200 flex-shrink-0', collapsed ? 'w-16' : 'w-56')}>
       <div className={cn('flex items-center h-14 border-b border-sidebar-border flex-shrink-0', collapsed ? 'justify-center px-0' : 'px-4 gap-2')}>
-        <div className="w-6 h-6 bg-primary rounded flex-shrink-0 flex items-center justify-center">
-          <Truck size={13} className="text-primary-foreground" />
-        </div>
-        {!collapsed && <span className="font-semibold text-[0.9375rem] text-foreground tracking-tight">TransitOps</span>}
+        <BrandLogo showText={!collapsed} className={collapsed ? 'justify-center w-full' : ''} textClassName="text-foreground" />
       </div>
 
       <nav className="flex-1 py-2 overflow-y-auto">
-        {NAV_ITEMS.map(item => {
+        {allowedItems.map(item => {
           const active = route === item.id;
           return (
             <button
@@ -823,18 +832,20 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
       </nav>
 
       <div className="border-t border-sidebar-border py-2">
-        <button
-          onClick={() => navigate('settings')}
-          title={collapsed ? 'Settings' : undefined}
-          className={cn(
-            'w-full flex items-center gap-3 px-3 h-10 text-[0.8125rem] font-medium transition-colors',
-            route === 'settings' ? 'bg-primary/10 text-primary' : 'text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground',
-            collapsed && 'justify-center px-0'
-          )}
-        >
-          <Settings size={16} className="flex-shrink-0" />
-          {!collapsed && 'Settings'}
-        </button>
+        {user?.role === 'FLEET_MANAGER' && (
+          <button
+            onClick={() => navigate('settings')}
+            title={collapsed ? 'Settings' : undefined}
+            className={cn(
+              'w-full flex items-center gap-3 px-3 h-10 text-[0.8125rem] font-medium transition-colors',
+              route === 'settings' ? 'bg-primary/10 text-primary' : 'text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+              collapsed && 'justify-center px-0'
+            )}
+          >
+            <Settings size={16} className="flex-shrink-0" />
+            {!collapsed && 'Settings'}
+          </button>
+        )}
         <button
           onClick={onToggle}
           className={cn('w-full flex items-center gap-3 px-3 h-10 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors', collapsed && 'justify-center px-0')}
@@ -852,10 +863,37 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
 // ============================================================
 
 function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
-  const { state, darkMode, toggleDarkMode } = useApp();
+  const { state, darkMode, toggleDarkMode, user, logout } = useApp();
+  const [menuOpen, setMenuOpen] = useState(false);
   const expiringCount = state.drivers.filter(d => isNearExpiry(d.licenseExpiryDate) || isExpired(d.licenseExpiryDate)).length;
+
+  const roleLabels: Record<string, string> = {
+    FLEET_MANAGER: 'Fleet Manager',
+    DRIVER: 'Driver',
+    FINANCIAL_ANALYST: 'Financial Analyst',
+    SAFETY_OFFICER: 'Safety Officer',
+  };
+
+  const getInitials = (name: string) => {
+    if (!name) return 'U';
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  };
+
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [menuOpen]);
+
   return (
-    <header className="h-14 border-b border-border flex items-center px-4 gap-3 flex-shrink-0 bg-background">
+    <header className="h-14 border-b border-border flex items-center px-4 gap-3 flex-shrink-0 bg-background relative">
       <button onClick={onMenuClick} className="text-muted-foreground hover:text-foreground p-1.5 rounded hover:bg-accent lg:hidden" aria-label="Open menu">
         <Menu size={18} />
       </button>
@@ -886,11 +924,42 @@ function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
             </span>
           )}
         </button>
-        <div className="flex items-center gap-2 pl-2 border-l border-border">
-          <span className="text-xs text-muted-foreground hidden sm:block">Fleet Manager</span>
-          <div className="w-7 h-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center text-primary text-xs font-semibold">
-            FM
-          </div>
+        <div className="relative flex items-center pl-2 border-l border-border" ref={menuRef}>
+          <button 
+            onClick={() => setMenuOpen(!menuOpen)}
+            className="flex items-center gap-2 text-left hover:opacity-85 transition-opacity"
+            aria-label="User menu"
+            aria-expanded={menuOpen}
+          >
+            <div className="flex flex-col text-right hidden sm:flex">
+              <span className="text-[11px] font-semibold text-foreground leading-tight">{user?.fullName || 'User'}</span>
+              <span className="text-[10px] text-muted-foreground leading-none">{roleLabels[user?.role || ''] || user?.role || 'Guest'}</span>
+            </div>
+            <div className="w-7 h-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center text-primary text-xs font-semibold select-none">
+              {getInitials(user?.fullName || 'User')}
+            </div>
+          </button>
+
+          {menuOpen && (
+            <div className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-md shadow-lg py-1 z-50 text-[0.8125rem]">
+              <div className="px-3 py-2 border-b border-border sm:hidden">
+                <p className="font-semibold text-foreground leading-tight">{user?.fullName}</p>
+                <p className="text-[10px] text-muted-foreground">{roleLabels[user?.role || '']}</p>
+              </div>
+              <button 
+                onClick={() => { setMenuOpen(false); toast.info('Profile view coming soon'); }}
+                className="w-full text-left px-3.5 py-2 text-foreground hover:bg-accent transition-colors"
+              >
+                Profile
+              </button>
+              <button 
+                onClick={() => { setMenuOpen(false); logout(); }}
+                className="w-full text-left px-3.5 py-2 text-destructive hover:bg-destructive/5 transition-colors border-t border-border"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>
@@ -934,108 +1003,8 @@ function AppShell({ children }: { children: ReactNode }) {
 // ============================================================
 
 function LoginPage() {
-  const { navigate } = useApp();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.includes('@')) { setError('Please enter a valid email address.'); return; }
-    setError('');
-    setLoading(true);
-    setTimeout(() => { setLoading(false); navigate('overview'); }, 1200);
-  };
-
-  return (
-    <div className="min-h-screen flex bg-background">
-      {/* Left panel */}
-      <div className="hidden lg:flex flex-col justify-between w-[42%] bg-card border-r border-border p-10">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 bg-primary rounded flex items-center justify-center">
-            <Truck size={14} className="text-primary-foreground" />
-          </div>
-          <span className="font-semibold text-base text-foreground">TransitOps</span>
-        </div>
-        <div>
-          <h1 className="text-[2rem] font-semibold text-foreground leading-tight mb-4">
-            Drive operations.<br />
-            Deliver with{' '}
-            <span className="text-primary">confidence.</span>
-          </h1>
-          <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
-            Centralized fleet operations for vehicle management, dispatch, maintenance, and reporting.
-          </p>
-          <ul className="space-y-3">
-            {[
-              { icon: <Truck size={15} />, label: 'Fleet management' },
-              { icon: <Route size={15} />, label: 'Trip dispatch' },
-              { icon: <Wrench size={15} />, label: 'Maintenance control' },
-              { icon: <BarChart3 size={15} />, label: 'Operational reporting' },
-            ].map(item => (
-              <li key={item.label} className="flex items-center gap-3 text-sm text-muted-foreground">
-                <span className="text-primary">{item.icon}</span>
-                {item.label}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <p className="text-xs text-muted-foreground/50">TransitOps · Fleet Intelligence Platform</p>
-      </div>
-
-      {/* Right panel */}
-      <div className="flex-1 flex items-center justify-center p-6">
-        <div className="w-full max-w-[380px]">
-          <div className="mb-8">
-            <div className="flex items-center gap-2 mb-6 lg:hidden">
-              <div className="w-6 h-6 bg-primary rounded flex items-center justify-center">
-                <Truck size={12} className="text-primary-foreground" />
-              </div>
-              <span className="font-semibold text-sm text-foreground">TransitOps</span>
-            </div>
-            <h2 className="text-xl font-semibold text-foreground mb-1">Sign in to your account</h2>
-            <p className="text-sm text-muted-foreground">Enter your credentials to continue.</p>
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Input
-              label="Email address" type="email" placeholder="you@company.com"
-              value={email} onChange={e => setEmail(e.target.value)}
-              error={error && error.includes('email') ? error : undefined}
-              autoComplete="email"
-            />
-            <Input
-              label="Password" type="password" placeholder="••••••••"
-              value={password} onChange={e => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-            {error && !error.includes('email') && (
-              <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-3 py-2">
-                <AlertCircle size={13} />
-                {error}
-              </div>
-            )}
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                <input type="checkbox" className="rounded border-border" />
-                Remember me
-              </label>
-              <button type="button" className="text-xs text-primary hover:underline">Forgot password?</button>
-            </div>
-            <Button variant="primary" type="submit" loading={loading} className="w-full justify-center py-2">
-              {loading ? 'Signing in...' : 'Sign in'}
-            </Button>
-          </form>
-
-          <div className="mt-6 p-3 bg-muted border border-border rounded text-xs text-muted-foreground">
-            <strong className="text-foreground">Demo account</strong><br />
-            Any email / any password — click Sign in to access the platform.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  const { login } = useApp();
+  return <AuthLoginPage onLoginSuccess={login} />;
 }
 
 // ============================================================
@@ -1043,9 +1012,119 @@ function LoginPage() {
 // ============================================================
 
 function OverviewPage() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, user } = useApp();
   const tooltipStyle = useTooltipStyle(12);
   const { vehicles, drivers, trips } = state;
+
+  if (user?.role === 'DRIVER') {
+    // Find driver record
+    const driverRecord = state.drivers.find(d => d.name === user.fullName) || state.drivers.find(d => d.id === 'd2');
+    const driverTrips = state.trips.filter(t => t.driverId === driverRecord?.id);
+    const currentTrip = driverTrips.find(t => t.status === 'DISPATCHED');
+    const upcomingTrips = driverTrips.filter(t => t.status === 'DRAFT');
+
+    const getVehicleName = (id: string) => vehicles.find(v => v.id === id)?.name ?? id;
+    const getVehicleReg = (id: string) => vehicles.find(v => v.id === id)?.registrationNumber ?? '';
+
+    return (
+      <div className="space-y-6">
+        <PageHeader 
+          title={`Welcome back, ${user.fullName}`}
+          description="Your current trip assignment and operational status."
+        />
+
+        {/* Current Trip Section */}
+        <div className="border border-border rounded-md bg-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-border bg-card flex justify-between items-center">
+            <h3 className="text-sm font-semibold">Active Assignment</h3>
+            {currentTrip ? <StatusBadge status={currentTrip.status} /> : <span className="text-xs text-muted-foreground">No active trip</span>}
+          </div>
+          {currentTrip ? (
+            <div className="p-5 space-y-6">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">Trip ID</span>
+                  <span className="text-base font-semibold text-foreground">{currentTrip.id}</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">Assigned Vehicle</span>
+                  <span className="text-base font-semibold text-foreground">{getVehicleName(currentTrip.vehicleId)}</span>
+                  <span className="text-xs text-muted-foreground">{getVehicleReg(currentTrip.vehicleId)}</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">Cargo Weight</span>
+                  <span className="text-base font-semibold text-foreground">{formatNumber(currentTrip.cargoWeight)} kg</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">Planned Distance</span>
+                  <span className="text-base font-semibold text-foreground">{currentTrip.plannedDistance} km</span>
+                </div>
+              </div>
+
+              {/* Route Progress */}
+              <div className="border-t border-border pt-5">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground block mb-4">Route Info</span>
+                <div className="flex items-center justify-between px-2 text-sm font-semibold">
+                  <div className="flex flex-col">
+                    <span className="text-foreground">{currentTrip.source}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">Origin</span>
+                  </div>
+                  <div className="flex-1 mx-4 flex items-center relative">
+                    <div className="h-0.5 w-full bg-border" />
+                    <div className="absolute top-1/2 left-1/2 -translate-y-1/2 -translate-x-1/2 px-2 py-0.5 bg-primary/10 border border-primary/20 rounded text-[10px] text-primary font-bold">
+                      IN TRANSIT
+                    </div>
+                  </div>
+                  <div className="flex flex-col text-right">
+                    <span className="text-foreground">{currentTrip.destination}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">Destination</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-muted-foreground text-xs">
+              No active trip has been dispatched to you.
+            </div>
+          )}
+        </div>
+
+        {/* Upcoming Assignments */}
+        <div className="border border-border rounded-md bg-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h3 className="text-sm font-semibold">Upcoming Runs</h3>
+          </div>
+          {upcomingTrips.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground text-xs">
+              No upcoming trips assigned.
+            </div>
+          ) : (
+            <table className="w-full text-[0.8125rem]">
+              <thead>
+                <tr className="border-b border-border">
+                  {['Trip ID', 'Route', 'Vehicle', 'Cargo Weight', 'Distance', 'Status'].map(col => (
+                    <th key={col} className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {upcomingTrips.map(t => (
+                  <tr key={t.id} className="hover:bg-accent/50 transition-colors">
+                    <td className="px-4 py-3 font-medium">{t.id}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{t.source} → {t.destination}</td>
+                    <td className="px-4 py-3">{getVehicleName(t.vehicleId)}</td>
+                    <td className="px-4 py-3">{formatNumber(t.cargoWeight)} kg</td>
+                    <td className="px-4 py-3">{t.plannedDistance} km</td>
+                    <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const metrics = useMemo(() => {
     const total = vehicles.length;
@@ -1194,6 +1273,150 @@ function OverviewPage() {
             <ActivityList items={activity} />
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// APP SHELL SKELETON
+// ============================================================
+
+function AppShellSkeleton() {
+  return (
+    <div className="flex h-screen overflow-hidden bg-background">
+      {/* Sidebar skeleton */}
+      <div className="hidden lg:flex flex-col w-56 h-full bg-sidebar border-r border-sidebar-border p-4 justify-between">
+        <div className="space-y-6">
+          <div className="flex items-center gap-2 h-8">
+            <Skeleton className="w-6 h-6 rounded" />
+            <Skeleton className="h-4 w-24" />
+          </div>
+          <div className="space-y-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-8 w-full rounded" />
+            ))}
+          </div>
+        </div>
+        <Skeleton className="h-8 w-full rounded" />
+      </div>
+      {/* Main content skeleton */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* TopBar skeleton */}
+        <header className="h-14 border-b border-border flex items-center justify-between px-4 bg-background">
+          <Skeleton className="h-4 w-32" />
+          <div className="flex items-center gap-4">
+            <Skeleton className="w-7 h-7 rounded-full" />
+            <Skeleton className="h-4 w-20" />
+          </div>
+        </header>
+        {/* Main area */}
+        <main className="flex-1 p-6 space-y-6">
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-3 w-80" />
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <Skeleton className="h-24 rounded-lg" />
+            <Skeleton className="h-24 rounded-lg" />
+            <Skeleton className="h-24 rounded-lg" />
+          </div>
+          <Skeleton className="h-64 w-full rounded-lg" />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ACCESS DENIED PAGE
+// ============================================================
+
+function AccessDeniedPage() {
+  const { navigate, user } = useApp();
+  const handleReturn = () => {
+    if (!user) {
+      navigate('login');
+      return;
+    }
+    if (user.role === 'FLEET_MANAGER') navigate('overview');
+    else if (user.role === 'DRIVER') navigate('my-trips');
+    else if (user.role === 'FINANCIAL_ANALYST') navigate('reports');
+    else if (user.role === 'SAFETY_OFFICER') navigate('drivers');
+    else navigate('overview');
+  };
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-center">
+      <div className="w-12 h-12 bg-destructive/10 border border-destructive/20 text-destructive rounded-full flex items-center justify-center mb-4">
+        <AlertTriangle size={24} />
+      </div>
+      <h2 className="text-lg font-semibold text-foreground">Access Denied</h2>
+      <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+        You do not have permission to access this area.
+      </p>
+      <Button variant="primary" className="mt-6" onClick={handleReturn}>
+        Return to overview
+      </Button>
+    </div>
+  );
+}
+
+// ============================================================
+// MY TRIPS PAGE (DRIVER ONLY)
+// ============================================================
+
+function MyTripsPage() {
+  const { state, user } = useApp();
+  const { vehicles } = state;
+
+  const driverRecord = state.drivers.find(d => d.name === user?.fullName) || state.drivers.find(d => d.id === 'd2');
+  const driverTrips = state.trips.filter(t => t.driverId === driverRecord?.id);
+
+  const getVehicleName = (id: string) => vehicles.find(v => v.id === id)?.name ?? id;
+
+  return (
+    <div>
+      <PageHeader 
+        title="My Trips"
+        description="View your active, upcoming, and historical trip logs."
+      />
+
+      <div className="border border-border rounded-md bg-card overflow-hidden">
+        {driverTrips.length === 0 ? (
+          <EmptyState title="No trips assigned" description="Your assigned trips will appear here." />
+        ) : (
+          <table className="w-full text-[0.8125rem]">
+            <thead>
+              <tr className="border-b border-border bg-card">
+                {['Trip ID', 'Date', 'Route', 'Vehicle', 'Cargo Weight', 'Distance', 'Status'].map(col => (
+                  <th key={col} className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">{col}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {driverTrips.map(t => (
+                <tr key={t.id} className="hover:bg-accent/50 transition-colors">
+                  <td className="px-4 py-3 font-medium text-foreground">{t.id}</td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {t.dispatchedAt ? formatDate(t.dispatchedAt) : formatDate(t.createdAt)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col leading-tight">
+                      <span>{t.source}</span>
+                      <span className="text-[10px] text-muted-foreground">→ {t.destination}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">{getVehicleName(t.vehicleId)}</td>
+                  <td className="px-4 py-3 font-mono">{formatNumber(t.cargoWeight)} kg</td>
+                  <td className="px-4 py-3 font-mono">{t.plannedDistance} km</td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={t.status} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -2538,6 +2761,31 @@ function ReportsPage() {
   const tooltipStyle = useTooltipStyle();
   const tickStyle = useAxisTickStyle();
 
+  const exportReports = () => {
+    const rows = [
+      ['Metric', 'Value'],
+      ['Total Trips', String(state.trips.length)],
+      ['Fleet Utilization', `${Math.round((state.vehicles.filter(v => v.status === 'ON_TRIP').length / state.vehicles.length) * 100)}%`],
+      ['Operational Cost', formatCurrency(state.fuelLogs.reduce((s, f) => s + f.cost, 0) + state.maintenance.reduce((s, m) => s + m.cost, 0) + state.expenses.reduce((s, e) => s + e.amount, 0))],
+      ['Avg Fuel Efficiency', `${state.fuelLogs.length ? (state.fuelLogs.reduce((s, f) => s + f.efficiency, 0) / state.fuelLogs.length).toFixed(2) : '—'} km/L`],
+      ['Available Vehicles', String(state.vehicles.filter(v => v.status === 'AVAILABLE').length)],
+      ['Vehicles on Trip', String(state.vehicles.filter(v => v.status === 'ON_TRIP').length)],
+      ['Vehicles in Shop', String(state.vehicles.filter(v => v.status === 'IN_SHOP').length)],
+      ['Retired Vehicles', String(state.vehicles.filter(v => v.status === 'RETIRED').length)],
+    ];
+
+    const csvContent = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'fleet-reports.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const fleetUtilizationData = [
     { month: 'Feb', util: 58 }, { month: 'Mar', util: 62 }, { month: 'Apr', util: 55 },
     { month: 'May', util: 70 }, { month: 'Jun', util: 65 }, { month: 'Jul', util: 67 },
@@ -2565,7 +2813,7 @@ function ReportsPage() {
       <PageHeader
         title="Reports"
         description="Analyse fleet efficiency and operational cost."
-        action={<Button variant="secondary" icon={<Download size={14} />}>Export</Button>}
+        action={<Button variant="secondary" icon={<Download size={14} />} onClick={exportReports}>Export</Button>}
       />
 
       <MetricStrip metrics={[
@@ -2742,38 +2990,8 @@ function SettingsPage() {
         )}
 
         {tab === 'users' && (
-          <div className="border border-border rounded-md overflow-hidden">
-            <table className="w-full text-[0.8125rem]">
-              <thead>
-                <tr className="border-b border-border bg-card">
-                  {['User', 'Email', 'Role', 'Last Active'].map(col => (
-                    <th key={col} className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">{col}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {[
-                  { name: 'Priya Venkatesh', email: 'priya@cfsfreight.in', role: 'Fleet Manager', last: '12 Jul 2026' },
-                  { name: 'Arjun Mehta', email: 'arjun@cfsfreight.in', role: 'Dispatch User', last: '12 Jul 2026' },
-                  { name: 'Kavitha Nair', email: 'kavitha@cfsfreight.in', role: 'Safety Officer', last: '11 Jul 2026' },
-                  { name: 'Deepak Rao', email: 'deepak@cfsfreight.in', role: 'Financial Analyst', last: '10 Jul 2026' },
-                ].map(u => (
-                  <tr key={u.email} className="hover:bg-accent/40 transition-colors">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground flex-shrink-0">
-                          {u.name.split(' ').map(n => n[0]).join('')}
-                        </div>
-                        <span className="font-medium">{u.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{u.role}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{u.last}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div>
+            <UsersTab />
           </div>
         )}
       </div>
@@ -2786,8 +3004,21 @@ function SettingsPage() {
 // ============================================================
 
 function Router() {
-  const { route } = useApp();
-  if (route === 'login') return <LoginPage />;
+  const { route, isAuthenticated, authLoading } = useApp();
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground">
+        <div className="flex items-center gap-2 text-sm">
+          <Loader2 size={16} className="animate-spin" />
+          Loading your workspace...
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || route === 'login') return <LoginPage />;
+
   return (
     <AppShell>
       <AnimatePresence mode="wait">
@@ -2815,12 +3046,34 @@ function Router() {
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, INIT_STATE);
-  const [route, setRoute] = useState<Route>('overview');
+  const [route, setRoute] = useState<Route>('login');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
 
   const navigate = useCallback((r: Route) => {
     setRoute(r);
+    setSidebarOpen(false);
+  }, []);
+
+  const login = useCallback((nextUser: AuthenticatedUser) => {
+    setUser(nextUser);
+    setIsAuthenticated(true);
+    setRoute('overview');
+    setSidebarOpen(false);
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await authService.logout();
+    } catch {
+      // ignore logout errors and fall back to local UI state
+    }
+    setUser(null);
+    setIsAuthenticated(false);
+    setRoute('login');
     setSidebarOpen(false);
   }, []);
 
@@ -2832,8 +3085,44 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    const restoreSession = async () => {
+      try {
+        const existingUser = await authService.getCurrentUser();
+        if (!active) return;
+
+        if (existingUser) {
+          setUser(existingUser);
+          setIsAuthenticated(true);
+          setRoute('overview');
+        } else {
+          setUser(null);
+          setIsAuthenticated(false);
+          setRoute('login');
+        }
+      } catch {
+        if (active) {
+          setUser(null);
+          setIsAuthenticated(false);
+          setRoute('login');
+        }
+      } finally {
+        if (active) {
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    restoreSession();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
-    <AppContext.Provider value={{ state, dispatch, route, navigate, sidebarOpen, setSidebarOpen, darkMode, toggleDarkMode }}>
+    <AppContext.Provider value={{ state, dispatch, route, navigate, sidebarOpen, setSidebarOpen, darkMode, toggleDarkMode, user, isAuthenticated, authLoading, login, logout }}>
       <Router />
       <Toaster
         position="bottom-right"
