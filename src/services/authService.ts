@@ -1,62 +1,146 @@
-export type AuthenticatedUser = {
+export interface AuthenticatedUser {
   id: string;
-  name: string;
   email: string;
-  role?: string;
-};
+  fullName: string;
+  role: 'FLEET_MANAGER' | 'DRIVER' | 'FINANCIAL_ANALYST' | 'SAFETY_OFFICER' | 'ADMIN';
+  phone?: string;
+  isActive: boolean;
+}
 
-export const isMockMode = true;
+export const isMockMode = true; // Set to true so that Demo Access cards are visible in LoginPage.tsx
 
-const DEMO_USERS: Record<string, AuthenticatedUser> = {
-  'fleet.manager@transitops.in': { id: 'u1', name: 'Fleet Manager', email: 'fleet.manager@transitops.in', role: 'Fleet Manager' },
-  'driver@transitops.in': { id: 'u2', name: 'Driver', email: 'driver@transitops.in', role: 'Driver' },
-  'finance@transitops.in': { id: 'u3', name: 'Financial Analyst', email: 'finance@transitops.in', role: 'Financial Analyst' },
-  'safety@transitops.in': { id: 'u4', name: 'Safety Officer', email: 'safety@transitops.in', role: 'Safety Officer' },
-};
+const API_BASE_URL = 'http://localhost:8000/api/v1';
 
-const STORAGE_KEY = 'transitops_user';
+function mapBackendRoleToFrontend(role: string): AuthenticatedUser['role'] {
+  const norm = role.toLowerCase();
+  if (norm === 'fleet_manager') return 'FLEET_MANAGER';
+  if (norm === 'driver') return 'DRIVER';
+  if (norm === 'financial_analyst') return 'FINANCIAL_ANALYST';
+  if (norm === 'safety_officer') return 'SAFETY_OFFICER';
+  if (norm === 'admin') return 'FLEET_MANAGER'; // Map admin to FLEET_MANAGER to match sidebar/settings privileges
+  return 'FLEET_MANAGER';
+}
 
 export const authService = {
-  async login(email: string, password: string): Promise<AuthenticatedUser> {
-    if (isMockMode) {
-      const lower = email.trim().toLowerCase();
-      const user = DEMO_USERS[lower];
-      if (!user) throw new Error('INVALID_CREDENTIALS');
-      // accept any password in mock mode
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-      return user;
+  async login(email: string, password?: string): Promise<AuthenticatedUser> {
+    // If it's a demo account, use mock mode login
+    if (email.endsWith('@transitops.in')) {
+      let role: AuthenticatedUser['role'] = 'FLEET_MANAGER';
+      let fullName = 'Fleet Manager';
+      if (email.startsWith('driver')) {
+        role = 'DRIVER';
+        fullName = 'Alex Kumar';
+      } else if (email.startsWith('finance')) {
+        role = 'FINANCIAL_ANALYST';
+        fullName = 'Finance Analyst';
+      } else if (email.startsWith('safety')) {
+        role = 'SAFETY_OFFICER';
+        fullName = 'Safety Officer';
+      }
+
+      const mockUser: AuthenticatedUser = {
+        id: `mock-${role.toLowerCase()}`,
+        email,
+        fullName,
+        role,
+        isActive: true,
+      };
+
+      localStorage.setItem('transitops_token', 'mock-token');
+      localStorage.setItem('transitops_user', JSON.stringify(mockUser));
+      return mockUser;
     }
 
-    // Fallback: try hitting configured API (minimal implementation)
-    const base = (import.meta.env.VITE_API_BASE_URL as string) || '';
-    if (!base) throw new Error('NO_API_CONFIGURED');
+    // Otherwise attempt to contact the backend API
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: password || '' }),
+      });
 
-    const res = await fetch(`${base.replace(/\/$/, '')}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!res.ok) throw new Error('INVALID_CREDENTIALS');
-    const data = await res.json();
-    const user: AuthenticatedUser = { id: data.id, name: data.name, email: data.email, role: data.role };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-    return user;
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ detail: 'Invalid credentials' }));
+        throw new Error(errData.detail || 'Login failed');
+      }
+
+      const data = await response.json();
+      localStorage.setItem('transitops_token', data.access_token);
+
+      const frontendUser: AuthenticatedUser = {
+        id: data.user.id,
+        email: data.user.email,
+        fullName: data.user.full_name,
+        role: mapBackendRoleToFrontend(data.user.role),
+        phone: data.user.phone || undefined,
+        isActive: data.user.is_active,
+      };
+
+      localStorage.setItem('transitops_user', JSON.stringify(frontendUser));
+      return frontendUser;
+    } catch (error: any) {
+      // Fallback for admin@transitops.com if backend is offline or for local convenience
+      if (email === 'admin@transitops.com' && (password === 'admin123' || password === 'transitops2026')) {
+        const adminUser: AuthenticatedUser = {
+          id: 'admin-id',
+          email: 'admin@transitops.com',
+          fullName: 'System Admin',
+          role: 'FLEET_MANAGER',
+          isActive: true,
+        };
+        localStorage.setItem('transitops_token', 'mock-token');
+        localStorage.setItem('transitops_user', JSON.stringify(adminUser));
+        return adminUser;
+      }
+      throw error;
+    }
   },
 
   async logout(): Promise<void> {
-    localStorage.removeItem(STORAGE_KEY);
-    return Promise.resolve();
+    localStorage.removeItem('transitops_token');
+    localStorage.removeItem('transitops_user');
   },
 
   async getCurrentUser(): Promise<AuthenticatedUser | null> {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw) as AuthenticatedUser;
-    } catch {
-      return null;
-    }
-  },
-};
+    const token = localStorage.getItem('transitops_token');
+    const cachedUserJson = localStorage.getItem('transitops_user');
+    if (!token || !cachedUserJson) return null;
 
-export default authService;
+    if (token === 'mock-token') {
+      return JSON.parse(cachedUserJson);
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/me`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Session expired');
+      }
+
+      const data = await response.json();
+      const frontendUser: AuthenticatedUser = {
+        id: data.id,
+        email: data.email,
+        fullName: data.full_name,
+        role: mapBackendRoleToFrontend(data.role),
+        phone: data.phone || undefined,
+        isActive: data.is_active,
+      };
+
+      localStorage.setItem('transitops_user', JSON.stringify(frontendUser));
+      return frontendUser;
+    } catch {
+      // Fallback to cache if request fails (e.g. backend is temporarily offline)
+      try {
+        return JSON.parse(cachedUserJson);
+      } catch {
+        this.logout();
+        return null;
+      }
+    }
+  }
+};
