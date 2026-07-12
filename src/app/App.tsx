@@ -10,7 +10,7 @@ import {
   AlertCircle, Download, RefreshCw, Pencil, Trash2,
   ChevronDown, DollarSign, CalendarDays,
   Minus, Activity, TrendingUp, Car, Clock, Route,
-  Shield, MapPin, Package, Fuel, Navigation, Sun, Moon,
+  Shield, MapPin, Package, Fuel, Navigation, Sun, Moon, Sparkles,
 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -20,10 +20,12 @@ import {
 } from 'recharts';
 import UsersTab from './settings/UsersTab';
 import BrandLogo from './components/ui/BrandLogo';
+import { SmartDispatchPanel } from './components/SmartDispatchPanel';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import AuthLoginPage from './components/auth/LoginPage';
 import { authService, type AuthenticatedUser, isMockMode } from '../services/authService';
+import { getSmartDispatchRecommendations, type SmartDispatchInput, type SmartDispatchResponse } from '../services/smartDispatchService';
 
 // ============================================================
 // UTILITIES
@@ -1959,6 +1961,14 @@ function TripDispatcherPage() {
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
   const [dispatched, setDispatched] = useState<Trip | null>(null);
 
+  // Smart Dispatch state
+  const [showSmartDispatch, setShowSmartDispatch] = useState(false);
+  const [smartDispatchLoading, setSmartDispatchLoading] = useState(false);
+  const [smartDispatchResponse, setSmartDispatchResponse] = useState<SmartDispatchResponse | null>(null);
+  const [smartDispatchError, setSmartDispatchError] = useState<string | null>(null);
+  const [smartDispatchApplied, setSmartDispatchApplied] = useState(false);
+  const [appliedRecommendationScore, setAppliedRecommendationScore] = useState<number | null>(null);
+
   const steps = ['Route', 'Vehicle', 'Driver', 'Cargo', 'Review'];
   const selectedVehicle = state.vehicles.find(v => v.id === draft.vehicleId);
   const selectedDriver = state.drivers.find(d => d.id === draft.driverId);
@@ -1987,6 +1997,55 @@ function TripDispatcherPage() {
     }
     setStepErrors(errors);
     return Object.keys(errors).length === 0;
+  };
+
+  const handleSmartDispatch = async () => {
+    if (!validateStep(3)) return;
+
+    setShowSmartDispatch(true);
+    setSmartDispatchLoading(true);
+    setSmartDispatchError(null);
+    setSmartDispatchResponse(null);
+
+    try {
+      // Call Smart Dispatch service
+      const input: SmartDispatchInput = {
+        source: draft.source,
+        destination: draft.destination,
+        plannedDistance: Number(draft.plannedDistance),
+        cargoWeight: Number(draft.cargoWeight),
+      };
+
+      const response = getSmartDispatchRecommendations(
+        input,
+        state.vehicles,
+        state.drivers,
+        TODAY
+      );
+
+      setSmartDispatchResponse(response);
+    } catch (err) {
+      setSmartDispatchError(
+        err instanceof Error ? err.message : 'An unexpected error occurred'
+      );
+    } finally {
+      setSmartDispatchLoading(false);
+    }
+  };
+
+  const handleApplyRecommendation = (recommendation: any) => {
+    // Apply vehicle and driver from recommendation
+    setField('vehicleId', recommendation.vehicle.id);
+    setField('driverId', recommendation.driver.id);
+    setAppliedRecommendationScore(recommendation.score);
+    setShowSmartDispatch(false);
+    setSmartDispatchApplied(true);
+
+    // Show feedback toast
+    toast.success(
+      `Recommendation applied\n${recommendation.vehicle.name} and ${recommendation.driver.name} selected.`,
+      { duration: 3 }
+    );
   };
 
   const next = () => { if (validateStep(step)) setStep(s => s + 1); };
@@ -2058,6 +2117,40 @@ function TripDispatcherPage() {
           <Button variant="primary" onClick={() => navigate('overview')}>Return to overview</Button>
         </div>
       </motion.div>
+    );
+  }
+
+  // Smart Dispatch View
+  if (showSmartDispatch) {
+    return (
+      <div>
+        <div className="flex items-center gap-3 mb-6">
+          <button
+            onClick={() => {
+              setShowSmartDispatch(false);
+              setSmartDispatchResponse(null);
+              setSmartDispatchError(null);
+            }}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <div>
+            <h1 className="text-[1.375rem] font-semibold">Smart Dispatch</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">Finding the best vehicle and driver combination...</p>
+          </div>
+        </div>
+
+        <div className="max-w-2xl">
+          <SmartDispatchPanel
+            loading={smartDispatchLoading}
+            response={smartDispatchResponse}
+            error={smartDispatchError}
+            onApplyRecommendation={handleApplyRecommendation}
+            onRetry={handleSmartDispatch}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -2259,6 +2352,24 @@ function TripDispatcherPage() {
                   </div>
                 </div>
               )}
+
+              {/* Smart Dispatch Option - Show if cargo weight is valid */}
+              {draft.cargoWeight && validateStep(3) && !selectedVehicle && (
+                <div className="border border-border rounded-md p-4 bg-primary/5">
+                  <h4 className="text-xs font-semibold text-foreground mb-1">Find the best dispatch</h4>
+                  <p className="text-xs text-muted-foreground mb-3">Rank eligible vehicle and driver combinations for this trip.</p>
+                  <Button 
+                    variant="secondary" 
+                    size="md" 
+                    className="w-full"
+                    loading={smartDispatchLoading}
+                    onClick={handleSmartDispatch}
+                  >
+                    Find best dispatch
+                  </Button>
+                </div>
+              )}
+
               <div className="flex justify-between pt-2">
                 <Button variant="ghost" icon={<ArrowLeft size={13} />} onClick={back}>Back</Button>
                 <Button variant="primary" disabled={!cargoValid || !draft.cargoWeight} icon={<ArrowRight size={13} />} onClick={next}>Continue to review</Button>
@@ -2284,6 +2395,15 @@ function TripDispatcherPage() {
                 <h3 className="text-sm font-semibold mb-3">Dispatch validation</h3>
                 <ValidationList items={validations} />
               </div>
+
+              {smartDispatchApplied && appliedRecommendationScore !== null && (
+                <div className="border border-border rounded-md p-3 bg-muted/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">Smart Dispatch score</span>
+                    <span className="text-lg font-semibold text-foreground">{appliedRecommendationScore} <span className="text-xs text-muted-foreground">/100</span></span>
+                  </div>
+                </div>
+              )}
 
               {allPass ? (
                 <div className="flex items-center gap-2 p-3 bg-emerald-400/8 border border-emerald-400/20 rounded text-xs text-emerald-400">
