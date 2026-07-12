@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 import urllib.parse
 
 class Settings(BaseSettings):
-    raw_password: ClassVar[str] = "P0stgres@l2026"
+    raw_password: ClassVar[str] = "123456"
     encoded_password: ClassVar[str] = urllib.parse.quote_plus(raw_password)
     DATABASE_URL: str = f"postgresql+psycopg2://postgres:{encoded_password}@localhost:5432/transitops"
     SECRET_KEY: str = "transitops-super-secret-key-change-in-production"
