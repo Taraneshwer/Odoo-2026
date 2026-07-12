@@ -1,0 +1,39 @@
+.venv
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+*.local
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.pyc
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+*.sqlite3
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sln
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+*.wheel
+*.tar.gz
+
+# Local database and runtime files
+*.db
+*.db-journal
