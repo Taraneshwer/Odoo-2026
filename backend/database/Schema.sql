@@ -21,6 +21,14 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -233,6 +241,7 @@ CREATE TRIGGER update_vehicles_updated_at BEFORE UPDATE ON public.vehicles FOR E
 
 \unrestrict KdN6UWTQ7XpxkaSVc2X4nTK9VaITTbtpKOJTgV70ObqB8uOHlas2GtefhA6zaJM
 
+SET search_path = public;
 
 -- ============================================
 -- TABLES 3-7: Drivers, Trips, Maintenance, Fuel, Expenses
