@@ -10,7 +10,7 @@ import {
   AlertCircle, Download, RefreshCw, Pencil, Trash2,
   ChevronDown, DollarSign, CalendarDays,
   Minus, Activity, TrendingUp, Car, Clock, Route,
-  Shield, MapPin, Package, Fuel, Navigation, Sun, Moon,
+  Shield, MapPin, Package, Fuel, Navigation, Sun, Moon, Sparkles,
 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -20,10 +20,12 @@ import {
 } from 'recharts';
 import UsersTab from './settings/UsersTab';
 import BrandLogo from './components/ui/BrandLogo';
+import { SmartDispatchPanel } from './components/SmartDispatchPanel';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import AuthLoginPage from './components/auth/LoginPage';
 import { authService, type AuthenticatedUser, isMockMode } from '../services/authService';
+import { getSmartDispatchRecommendations, type SmartDispatchInput, type SmartDispatchResponse } from '../services/smartDispatchService';
 
 // ============================================================
 // UTILITIES
@@ -67,6 +69,29 @@ function isNearExpiry(dateStr: string): boolean { const d = daysUntil(dateStr); 
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 9);
+}
+
+function normalizeRole(role?: string): string {
+  const value = (role || '').trim().toUpperCase().replace(/\s+/g, '_');
+  switch (value) {
+    case 'FLEET_MANAGER':
+    case 'FLEET_MANAGERS':
+      return 'FLEET_MANAGER';
+    case 'DRIVER':
+      return 'DRIVER';
+    case 'FINANCIAL_ANALYST':
+    case 'FINANCE':
+      return 'FINANCIAL_ANALYST';
+    case 'SAFETY_OFFICER':
+    case 'SAFETY':
+      return 'SAFETY_OFFICER';
+    default:
+      return value;
+  }
+}
+
+function getDisplayName(user: AuthenticatedUser | null): string {
+  return user?.fullName || user?.name || 'User';
 }
 
 // ============================================================
@@ -119,6 +144,7 @@ type AppAction =
   | { type: 'ADD_VEHICLE'; vehicle: Vehicle }
   | { type: 'UPDATE_VEHICLE_STATUS'; vehicleId: string; status: VehicleStatus }
   | { type: 'ADD_DRIVER'; driver: Driver }
+  | { type: 'UPDATE_DRIVER'; driverId: string; updates: Partial<Driver> }
   | { type: 'DISPATCH_TRIP'; trip: Trip }
   | { type: 'COMPLETE_TRIP'; tripId: string; vehicleId: string; driverId: string }
   | { type: 'CANCEL_TRIP'; tripId: string; vehicleId: string; driverId: string }
@@ -196,6 +222,11 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, vehicles: state.vehicles.map(v => v.id === action.vehicleId ? { ...v, status: action.status } : v) };
     case 'ADD_DRIVER':
       return { ...state, drivers: [...state.drivers, action.driver] };
+    case 'UPDATE_DRIVER':
+      return {
+        ...state,
+        drivers: state.drivers.map(d => d.id === action.driverId ? { ...d, ...action.updates } : d),
+      };
     case 'DISPATCH_TRIP':
       return {
         ...state,
@@ -245,7 +276,7 @@ function reducer(state: AppState, action: AppAction): AppState {
 type Route =
   | 'login' | 'overview' | 'vehicles' | 'drivers'
   | 'trips' | 'trips-new' | 'maintenance' | 'expenses'
-  | 'reports' | 'settings' | 'my-trips';
+  | 'reports' | 'settings' | 'my-trips' | 'profile';
 
 interface AppCtx {
   state: AppState;
@@ -795,7 +826,8 @@ const NAV_ITEMS: NavItem[] = [
 
 function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { route, navigate, user } = useApp();
-  const allowedItems = NAV_ITEMS.filter(item => user && item.allowedRoles.includes(user.role));
+  const normalizedRole = normalizeRole(user?.role);
+  const allowedItems = NAV_ITEMS.filter(item => item.allowedRoles.includes(normalizedRole));
 
   return (
     <aside className={cn('flex flex-col h-full bg-sidebar border-r border-sidebar-border transition-all duration-200 flex-shrink-0', collapsed ? 'w-16' : 'w-56')}>
@@ -832,7 +864,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
       </nav>
 
       <div className="border-t border-sidebar-border py-2">
-        {user?.role === 'FLEET_MANAGER' && (
+        {normalizedRole === 'FLEET_MANAGER' && (
           <button
             onClick={() => navigate('settings')}
             title={collapsed ? 'Settings' : undefined}
@@ -863,9 +895,29 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
 // ============================================================
 
 function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
-  const { state, darkMode, toggleDarkMode, user, logout } = useApp();
+  const { state, darkMode, toggleDarkMode, user, logout, navigate } = useApp();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const expiringCount = state.drivers.filter(d => isNearExpiry(d.licenseExpiryDate) || isExpired(d.licenseExpiryDate)).length;
+  const displayName = getDisplayName(user);
+  const normalizedRole = normalizeRole(user?.role);
+  const notificationItems = [
+    {
+      title: 'License expiry alerts',
+      message: `${expiringCount} driver license${expiringCount === 1 ? '' : 's'} need attention`,
+      urgent: expiringCount > 0,
+    },
+    {
+      title: 'Trip dispatch health',
+      message: `${state.trips.filter(t => t.status === 'DISPATCHED').length} active trips are on route`,
+      urgent: false,
+    },
+    {
+      title: 'Fleet readiness',
+      message: `${state.vehicles.filter(v => v.status === 'AVAILABLE').length} vehicles are currently available`,
+      urgent: false,
+    },
+  ];
 
   const roleLabels: Record<string, string> = {
     FLEET_MANAGER: 'Fleet Manager',
@@ -880,6 +932,7 @@ function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   };
 
   const menuRef = useRef<HTMLDivElement>(null);
+  const notificationsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -891,6 +944,17 @@ function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
     document.addEventListener('mousedown', onClickOutside);
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (notificationsRef.current && !notificationsRef.current.contains(e.target as Node)) {
+        setNotificationsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [notificationsOpen]);
 
   return (
     <header className="h-14 border-b border-border flex items-center px-4 gap-3 flex-shrink-0 bg-background relative">
@@ -916,14 +980,43 @@ function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
         >
           {darkMode ? <Sun size={16} /> : <Moon size={16} />}
         </button>
-        <button className="relative p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent" aria-label="Notifications">
-          <Bell size={16} />
-          {expiringCount > 0 && (
-            <span className="absolute top-0.5 right-0.5 w-3.5 h-3.5 bg-amber-500 rounded-full text-[9px] font-bold text-black flex items-center justify-center">
-              {expiringCount}
-            </span>
+        <div className="relative" ref={notificationsRef}>
+          <button
+            onClick={() => setNotificationsOpen(o => !o)}
+            className="relative p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+            aria-label="Notifications"
+            aria-expanded={notificationsOpen}
+          >
+            <Bell size={16} />
+            {expiringCount > 0 && (
+              <span className="absolute top-0.5 right-0.5 w-3.5 h-3.5 bg-amber-500 rounded-full text-[9px] font-bold text-black flex items-center justify-center">
+                {expiringCount}
+              </span>
+            )}
+          </button>
+
+          {notificationsOpen && (
+            <div className="absolute right-0 top-full mt-2 w-72 bg-card border border-border rounded-md shadow-lg py-2 z-50">
+              <div className="px-3 pb-2 border-b border-border">
+                <p className="text-sm font-semibold text-foreground">Notifications</p>
+                <p className="text-[11px] text-muted-foreground">Live fleet updates</p>
+              </div>
+              <div className="max-h-72 overflow-y-auto">
+                {notificationItems.map((item, index) => (
+                  <div key={index} className="px-3 py-2.5 border-b border-border/60 last:border-b-0 hover:bg-accent/50">
+                    <div className="flex items-start gap-2">
+                      <span className={cn('mt-1 h-2 w-2 rounded-full', item.urgent ? 'bg-amber-500' : 'bg-emerald-500')} />
+                      <div>
+                        <p className="text-[12px] font-medium text-foreground">{item.title}</p>
+                        <p className="text-[11px] text-muted-foreground">{item.message}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
-        </button>
+        </div>
         <div className="relative flex items-center pl-2 border-l border-border" ref={menuRef}>
           <button 
             onClick={() => setMenuOpen(!menuOpen)}
@@ -932,22 +1025,22 @@ function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
             aria-expanded={menuOpen}
           >
             <div className="flex flex-col text-right hidden sm:flex">
-              <span className="text-[11px] font-semibold text-foreground leading-tight">{user?.fullName || 'User'}</span>
-              <span className="text-[10px] text-muted-foreground leading-none">{roleLabels[user?.role || ''] || user?.role || 'Guest'}</span>
+              <span className="text-[11px] font-semibold text-foreground leading-tight">{displayName}</span>
+              <span className="text-[10px] text-muted-foreground leading-none">{roleLabels[normalizedRole] || normalizedRole || 'Guest'}</span>
             </div>
             <div className="w-7 h-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center text-primary text-xs font-semibold select-none">
-              {getInitials(user?.fullName || 'User')}
+              {getInitials(displayName)}
             </div>
           </button>
 
           {menuOpen && (
             <div className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-md shadow-lg py-1 z-50 text-[0.8125rem]">
               <div className="px-3 py-2 border-b border-border sm:hidden">
-                <p className="font-semibold text-foreground leading-tight">{user?.fullName}</p>
-                <p className="text-[10px] text-muted-foreground">{roleLabels[user?.role || '']}</p>
+                <p className="font-semibold text-foreground leading-tight">{displayName}</p>
+                <p className="text-[10px] text-muted-foreground">{roleLabels[normalizedRole] || normalizedRole}</p>
               </div>
               <button 
-                onClick={() => { setMenuOpen(false); toast.info('Profile view coming soon'); }}
+                onClick={() => { setMenuOpen(false); navigate('profile'); }}
                 className="w-full text-left px-3.5 py-2 text-foreground hover:bg-accent transition-colors"
               >
                 Profile
@@ -1008,6 +1101,76 @@ function LoginPage() {
 }
 
 // ============================================================
+// PROFILE PAGE
+// ============================================================
+
+function ProfilePage() {
+  const { user, state } = useApp();
+  const displayName = getDisplayName(user);
+  const initials = displayName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  const normalizedRole = normalizeRole(user?.role);
+  const roleLabel = normalizedRole === 'FLEET_MANAGER' ? 'Fleet Manager' : normalizedRole || 'User';
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title={displayName !== 'User' ? `Profile · ${displayName}` : 'Profile'}
+        description="Your account overview and access summary."
+      />
+
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-lg border border-border bg-card p-6 shadow-sm">
+          <div className="flex items-center gap-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 text-lg font-semibold text-primary">
+              {initials}
+            </div>
+            <div>
+              <h3 className="text-base font-semibold text-foreground">{displayName}</h3>
+              <p className="text-sm text-muted-foreground">{user?.email || 'No email available'}</p>
+              <p className="mt-1 text-xs font-medium text-primary">{roleLabel}</p>
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
+            <div className="rounded-md border border-border bg-background/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Workspace</p>
+              <p className="mt-1 text-sm font-medium text-foreground">TransitOps Fleet Command</p>
+            </div>
+            <div className="rounded-md border border-border bg-background/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Active vehicles</p>
+              <p className="mt-1 text-sm font-medium text-foreground">{state.vehicles.filter(v => v.status === 'AVAILABLE').length}</p>
+            </div>
+            <div className="rounded-md border border-border bg-background/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Active drivers</p>
+              <p className="mt-1 text-sm font-medium text-foreground">{state.drivers.filter(d => d.status === 'AVAILABLE').length}</p>
+            </div>
+            <div className="rounded-md border border-border bg-background/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Open trips</p>
+              <p className="mt-1 text-sm font-medium text-foreground">{state.trips.filter(t => t.status === 'DISPATCHED').length}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-foreground">Quick access</h3>
+          <div className="mt-4 space-y-2">
+            <div className="rounded-md border border-border bg-background/70 p-3 text-sm text-muted-foreground">
+              Review fleet status and dispatch health.
+            </div>
+            <div className="rounded-md border border-border bg-background/70 p-3 text-sm text-muted-foreground">
+              Monitor driver availability and trip progress.
+            </div>
+            <div className="rounded-md border border-border bg-background/70 p-3 text-sm text-muted-foreground">
+              Open settings to manage role permissions.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // OVERVIEW PAGE
 // ============================================================
 
@@ -1016,9 +1179,9 @@ function OverviewPage() {
   const tooltipStyle = useTooltipStyle(12);
   const { vehicles, drivers, trips } = state;
 
-  if (user?.role === 'DRIVER') {
+  if (normalizeRole(user?.role) === 'DRIVER') {
     // Find driver record
-    const driverRecord = state.drivers.find(d => d.name === user.fullName) || state.drivers.find(d => d.id === 'd2');
+    const driverRecord = state.drivers.find(d => d.name === getDisplayName(user)) || state.drivers.find(d => d.id === 'd2');
     const driverTrips = state.trips.filter(t => t.driverId === driverRecord?.id);
     const currentTrip = driverTrips.find(t => t.status === 'DISPATCHED');
     const upcomingTrips = driverTrips.filter(t => t.status === 'DRAFT');
@@ -1029,7 +1192,7 @@ function OverviewPage() {
     return (
       <div className="space-y-6">
         <PageHeader 
-          title={`Welcome back, ${user.fullName}`}
+          title={`Welcome back, ${getDisplayName(user)}`}
           description="Your current trip assignment and operational status."
         />
 
@@ -1339,7 +1502,7 @@ function AccessDeniedPage() {
       navigate('login');
       return;
     }
-    if (user.role === 'FLEET_MANAGER') navigate('overview');
+    if (normalizeRole(user?.role) === 'FLEET_MANAGER') navigate('overview');
     else if (user.role === 'DRIVER') navigate('my-trips');
     else if (user.role === 'FINANCIAL_ANALYST') navigate('reports');
     else if (user.role === 'SAFETY_OFFICER') navigate('drivers');
@@ -1635,6 +1798,9 @@ function DriversPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [renewalDriver, setRenewalDriver] = useState<Driver | null>(null);
+  const [renewalDate, setRenewalDate] = useState('');
+  const [renewalError, setRenewalError] = useState('');
 
   const filtered = useMemo(() => state.drivers.filter(d => {
     const q = search.toLowerCase();
@@ -1647,6 +1813,26 @@ function DriversPage() {
     if (isExpired(d.licenseExpiryDate)) return 'expired';
     if (isNearExpiry(d.licenseExpiryDate)) return 'near';
     return 'ok';
+  };
+
+  const handleRenewLicence = () => {
+    if (!renewalDriver || !renewalDate) {
+      setRenewalError('Please choose a new expiry date.');
+      return;
+    }
+
+    dispatch({
+      type: 'UPDATE_DRIVER',
+      driverId: renewalDriver.id,
+      updates: { licenseExpiryDate: renewalDate },
+    });
+
+    const updatedDriver = { ...renewalDriver, licenseExpiryDate: renewalDate };
+    setSelectedDriver(updatedDriver);
+    setRenewalDriver(null);
+    setRenewalDate('');
+    setRenewalError('');
+    toast.success(`${renewalDriver.name} licence updated`);
   };
 
   return (
@@ -1743,9 +1929,31 @@ function DriversPage() {
             <div className="space-y-6">
               <StatusBadge status={selectedDriver.status} />
               {ls === 'expired' && (
-                <div className="flex gap-2 p-3 bg-red-400/10 border border-red-400/20 rounded text-xs text-red-400">
-                  <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
-                  <div>Driving licence expired on {formatDate(selectedDriver.licenseExpiryDate)}. This driver cannot be dispatched until renewed.</div>
+                <div className="space-y-3">
+                  <div className="flex gap-2 p-3 bg-red-400/10 border border-red-400/20 rounded text-xs text-red-400">
+                    <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                    <div>Driving licence expired on {formatDate(selectedDriver.licenseExpiryDate)}. This driver cannot be dispatched until renewed.</div>
+                  </div>
+
+                  {!renewalDriver ? (
+                    <Button variant="primary" onClick={() => { setRenewalDriver(selectedDriver); setRenewalDate(''); setRenewalError(''); }}>
+                      Update licence
+                    </Button>
+                  ) : (
+                    <div className="rounded border border-border bg-background/70 p-3 space-y-3">
+                      <Input
+                        label="New licence expiry date"
+                        type="date"
+                        value={renewalDate}
+                        onChange={e => { setRenewalDate(e.target.value); setRenewalError(''); }}
+                        error={renewalError}
+                      />
+                      <div className="flex gap-2">
+                        <Button variant="ghost" onClick={() => { setRenewalDriver(null); setRenewalDate(''); setRenewalError(''); }}>Cancel</Button>
+                        <Button variant="primary" onClick={handleRenewLicence}>Save update</Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {ls === 'near' && (
@@ -1959,6 +2167,14 @@ function TripDispatcherPage() {
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
   const [dispatched, setDispatched] = useState<Trip | null>(null);
 
+  // Smart Dispatch state
+  const [showSmartDispatch, setShowSmartDispatch] = useState(false);
+  const [smartDispatchLoading, setSmartDispatchLoading] = useState(false);
+  const [smartDispatchResponse, setSmartDispatchResponse] = useState<SmartDispatchResponse | null>(null);
+  const [smartDispatchError, setSmartDispatchError] = useState<string | null>(null);
+  const [smartDispatchApplied, setSmartDispatchApplied] = useState(false);
+  const [appliedRecommendationScore, setAppliedRecommendationScore] = useState<number | null>(null);
+
   const steps = ['Route', 'Vehicle', 'Driver', 'Cargo', 'Review'];
   const selectedVehicle = state.vehicles.find(v => v.id === draft.vehicleId);
   const selectedDriver = state.drivers.find(d => d.id === draft.driverId);
@@ -1987,6 +2203,55 @@ function TripDispatcherPage() {
     }
     setStepErrors(errors);
     return Object.keys(errors).length === 0;
+  };
+
+  const handleSmartDispatch = async () => {
+    if (!validateStep(3)) return;
+
+    setShowSmartDispatch(true);
+    setSmartDispatchLoading(true);
+    setSmartDispatchError(null);
+    setSmartDispatchResponse(null);
+
+    try {
+      // Call Smart Dispatch service
+      const input: SmartDispatchInput = {
+        source: draft.source,
+        destination: draft.destination,
+        plannedDistance: Number(draft.plannedDistance),
+        cargoWeight: Number(draft.cargoWeight),
+      };
+
+      const response = getSmartDispatchRecommendations(
+        input,
+        state.vehicles,
+        state.drivers,
+        TODAY
+      );
+
+      setSmartDispatchResponse(response);
+    } catch (err) {
+      setSmartDispatchError(
+        err instanceof Error ? err.message : 'An unexpected error occurred'
+      );
+    } finally {
+      setSmartDispatchLoading(false);
+    }
+  };
+
+  const handleApplyRecommendation = (recommendation: any) => {
+    // Apply vehicle and driver from recommendation
+    setField('vehicleId', recommendation.vehicle.id);
+    setField('driverId', recommendation.driver.id);
+    setAppliedRecommendationScore(recommendation.score);
+    setShowSmartDispatch(false);
+    setSmartDispatchApplied(true);
+
+    // Show feedback toast
+    toast.success(
+      `Recommendation applied\n${recommendation.vehicle.name} and ${recommendation.driver.name} selected.`,
+      { duration: 3 }
+    );
   };
 
   const next = () => { if (validateStep(step)) setStep(s => s + 1); };
@@ -2058,6 +2323,40 @@ function TripDispatcherPage() {
           <Button variant="primary" onClick={() => navigate('overview')}>Return to overview</Button>
         </div>
       </motion.div>
+    );
+  }
+
+  // Smart Dispatch View
+  if (showSmartDispatch) {
+    return (
+      <div>
+        <div className="flex items-center gap-3 mb-6">
+          <button
+            onClick={() => {
+              setShowSmartDispatch(false);
+              setSmartDispatchResponse(null);
+              setSmartDispatchError(null);
+            }}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <div>
+            <h1 className="text-[1.375rem] font-semibold">Smart Dispatch</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">Finding the best vehicle and driver combination...</p>
+          </div>
+        </div>
+
+        <div className="max-w-2xl">
+          <SmartDispatchPanel
+            loading={smartDispatchLoading}
+            response={smartDispatchResponse}
+            error={smartDispatchError}
+            onApplyRecommendation={handleApplyRecommendation}
+            onRetry={handleSmartDispatch}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -2259,6 +2558,24 @@ function TripDispatcherPage() {
                   </div>
                 </div>
               )}
+
+              {/* Smart Dispatch Option - Show if cargo weight is valid */}
+              {draft.cargoWeight && validateStep(3) && !selectedVehicle && (
+                <div className="border border-border rounded-md p-4 bg-primary/5">
+                  <h4 className="text-xs font-semibold text-foreground mb-1">Find the best dispatch</h4>
+                  <p className="text-xs text-muted-foreground mb-3">Rank eligible vehicle and driver combinations for this trip.</p>
+                  <Button 
+                    variant="secondary" 
+                    size="md" 
+                    className="w-full"
+                    loading={smartDispatchLoading}
+                    onClick={handleSmartDispatch}
+                  >
+                    Find best dispatch
+                  </Button>
+                </div>
+              )}
+
               <div className="flex justify-between pt-2">
                 <Button variant="ghost" icon={<ArrowLeft size={13} />} onClick={back}>Back</Button>
                 <Button variant="primary" disabled={!cargoValid || !draft.cargoWeight} icon={<ArrowRight size={13} />} onClick={next}>Continue to review</Button>
@@ -2284,6 +2601,15 @@ function TripDispatcherPage() {
                 <h3 className="text-sm font-semibold mb-3">Dispatch validation</h3>
                 <ValidationList items={validations} />
               </div>
+
+              {smartDispatchApplied && appliedRecommendationScore !== null && (
+                <div className="border border-border rounded-md p-3 bg-muted/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">Smart Dispatch score</span>
+                    <span className="text-lg font-semibold text-foreground">{appliedRecommendationScore} <span className="text-xs text-muted-foreground">/100</span></span>
+                  </div>
+                </div>
+              )}
 
               {allPass ? (
                 <div className="flex items-center gap-2 p-3 bg-emerald-400/8 border border-emerald-400/20 rounded text-xs text-emerald-400">
@@ -3030,6 +3356,7 @@ function Router() {
           transition={{ duration: 0.18, ease: 'easeOut' }}
         >
           {route === 'overview' && <OverviewPage />}
+          {route === 'profile' && <ProfilePage />}
           {route === 'vehicles' && <VehiclesPage />}
           {route === 'drivers' && <DriversPage />}
           {route === 'trips' && <TripsPage />}
@@ -3059,7 +3386,13 @@ export default function App() {
   }, []);
 
   const login = useCallback((nextUser: AuthenticatedUser) => {
-    setUser(nextUser);
+    const normalizedUser: AuthenticatedUser = {
+      ...nextUser,
+      name: nextUser.name || nextUser.email || 'User',
+      role: normalizeRole(nextUser.role),
+      fullName: nextUser.fullName || nextUser.name || nextUser.email || 'User',
+    } as AuthenticatedUser;
+    setUser(normalizedUser);
     setIsAuthenticated(true);
     setRoute('overview');
     setSidebarOpen(false);
@@ -3094,7 +3427,13 @@ export default function App() {
         if (!active) return;
 
         if (existingUser) {
-          setUser(existingUser);
+          const normalizedUser: AuthenticatedUser = {
+            ...existingUser,
+            name: existingUser.name || existingUser.email || 'User',
+            role: normalizeRole(existingUser.role),
+            fullName: (existingUser as any).fullName || existingUser.name || existingUser.email || 'User',
+          } as AuthenticatedUser;
+          setUser(normalizedUser);
           setIsAuthenticated(true);
           setRoute('overview');
         } else {
