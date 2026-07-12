@@ -2333,6 +2333,7 @@ function TripDispatcherPage() {
   const back = () => setStep(s => Math.max(0, s - 1));
 
   const cargoWeight = Number(draft.cargoWeight) || 0;
+  const cargoStepValid = Boolean(draft.cargoWeight && !isNaN(Number(draft.cargoWeight)) && Number(draft.cargoWeight) > 0);
   const capacityPct = selectedVehicle ? Math.min(100, (cargoWeight / selectedVehicle.maxLoadCapacity) * 100) : 0;
   const cargoValid = selectedVehicle ? cargoWeight <= selectedVehicle.maxLoadCapacity : true;
 
@@ -2635,7 +2636,7 @@ function TripDispatcherPage() {
               )}
 
               {/* Smart Dispatch Option - Show if cargo weight is valid */}
-              {draft.cargoWeight && validateStep(3) && !selectedVehicle && (
+              {draft.cargoWeight && cargoStepValid && !selectedVehicle && (
                 <div className="border border-border rounded-md p-4 bg-primary/5">
                   <h4 className="text-xs font-semibold text-foreground mb-1">Find the best dispatch</h4>
                   <p className="text-xs text-muted-foreground mb-3">Rank eligible vehicle and driver combinations for this trip.</p>
