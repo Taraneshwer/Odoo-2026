@@ -26,6 +26,11 @@ import { twMerge } from 'tailwind-merge';
 import AuthLoginPage from './components/auth/LoginPage';
 import { authService, type AuthenticatedUser, isMockMode } from '../services/authService';
 import { getSmartDispatchRecommendations, type SmartDispatchInput, type SmartDispatchResponse } from '../services/smartDispatchService';
+import { DisruptionPanel } from '../features/autorescue/DisruptionPanel';
+import { AutoRescuePlanPage } from '../features/autorescue/AutoRescuePlanPage';
+import { RecoveryHistory } from '../features/autorescue/RecoveryHistory';
+import { detectImpactedTrips } from '../features/autorescue/autorescue.service';
+import type { DisruptionEvent, RecoveryHistoryEntry } from '../features/autorescue/autorescue.types';
 
 // ============================================================
 // UTILITIES
@@ -146,6 +151,7 @@ type AppAction =
   | { type: 'ADD_DRIVER'; driver: Driver }
   | { type: 'UPDATE_DRIVER'; driverId: string; updates: Partial<Driver> }
   | { type: 'DISPATCH_TRIP'; trip: Trip }
+  | { type: 'APPLY_RECOVERY_ASSIGNMENTS'; assignments: Array<{ tripId: string; vehicleId: string; driverId: string }> }
   | { type: 'COMPLETE_TRIP'; tripId: string; vehicleId: string; driverId: string }
   | { type: 'CANCEL_TRIP'; tripId: string; vehicleId: string; driverId: string }
   | { type: 'CREATE_MAINTENANCE'; record: MaintenanceRecord }
@@ -234,6 +240,22 @@ function reducer(state: AppState, action: AppAction): AppState {
         vehicles: state.vehicles.map(v => v.id === action.trip.vehicleId ? { ...v, status: 'ON_TRIP' } : v),
         drivers: state.drivers.map(d => d.id === action.trip.driverId ? { ...d, status: 'ON_TRIP' } : d),
       };
+    case 'APPLY_RECOVERY_ASSIGNMENTS':
+      return {
+        ...state,
+        trips: state.trips.map(trip => {
+          const match = action.assignments.find(item => item.tripId === trip.id);
+          return match ? { ...trip, vehicleId: match.vehicleId, driverId: match.driverId } : trip;
+        }),
+        vehicles: state.vehicles.map(vehicle => {
+          const assigned = action.assignments.some(item => item.vehicleId === vehicle.id);
+          return assigned ? { ...vehicle, status: 'ON_TRIP' } : vehicle;
+        }),
+        drivers: state.drivers.map(driver => {
+          const assigned = action.assignments.some(item => item.driverId === driver.id);
+          return assigned ? { ...driver, status: 'ON_TRIP' } : driver;
+        }),
+      };
     case 'COMPLETE_TRIP':
       return {
         ...state,
@@ -292,6 +314,14 @@ interface AppCtx {
   authLoading: boolean;
   login: (user: AuthenticatedUser) => void;
   logout: () => void;
+  disruptions: DisruptionEvent[];
+  setDisruptions: React.Dispatch<React.SetStateAction<DisruptionEvent[]>>;
+  recoveryHistory: RecoveryHistoryEntry[];
+  setRecoveryHistory: React.Dispatch<React.SetStateAction<RecoveryHistoryEntry[]>>;
+  activeRecoveryDisruption: DisruptionEvent | null;
+  setActiveRecoveryDisruption: (d: DisruptionEvent | null) => void;
+  showAutoRescueWorkspace: boolean;
+  setShowAutoRescueWorkspace: (v: boolean) => void;
 }
 
 export const AppContext = createContext<AppCtx>(null as unknown as AppCtx);
@@ -1175,7 +1205,7 @@ function ProfilePage() {
 // ============================================================
 
 function OverviewPage() {
-  const { state, dispatch, user } = useApp();
+  const { state, dispatch, user, disruptions, setActiveRecoveryDisruption, setShowAutoRescueWorkspace } = useApp();
   const tooltipStyle = useTooltipStyle(12);
   const { vehicles, drivers, trips } = state;
 
@@ -1339,6 +1369,40 @@ function OverviewPage() {
         { label: 'In Maintenance', value: metrics.inShop },
         { label: 'Fleet Utilization', value: `${metrics.utilization}%`, context: 'vehicles on trip' },
       ]} />
+
+      <div className="mt-6">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold">Operational Disruptions</h3>
+          <span className="text-[11px] text-muted-foreground">AutoRescue</span>
+        </div>
+        {disruptions.length === 0 ? (
+          <div className="rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">No active fleet disruptions</div>
+        ) : (
+          <div className="space-y-3">
+            {disruptions.map(disruption => {
+              const impactedTrips = detectImpactedTrips(disruption, {
+                vehicles: state.vehicles.map(v => ({ id: v.id, name: v.name, registrationNumber: v.registrationNumber, status: v.status, maxLoadCapacity: v.maxLoadCapacity })),
+                drivers: state.drivers.map(d => ({ id: d.id, name: d.name, licenseNumber: d.licenseNumber, licenseExpiryDate: d.licenseExpiryDate, status: d.status, safetyScore: d.safetyScore })),
+                trips: state.trips.map(t => ({ id: t.id, source: t.source, destination: t.destination, vehicleId: t.vehicleId, driverId: t.driverId, cargoWeight: t.cargoWeight, plannedDistance: t.plannedDistance, status: t.status, createdAt: t.createdAt })),
+                today: TODAY,
+              });
+              return (
+                <div key={disruption.id} className="rounded-md border border-border bg-card p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{disruption.entityName}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{disruption.reason}</p>
+                      <p className="text-[11px] text-muted-foreground mt-2">{impactedTrips.length} trip{impactedTrips.length === 1 ? '' : 's'} impacted</p>
+                    </div>
+                    <button onClick={() => { setActiveRecoveryDisruption(disruption); setShowAutoRescueWorkspace(true); }} className="rounded border border-border bg-background/70 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent">Review</button>
+                  </div>
+                  <div className="mt-3 text-[11px] text-muted-foreground">Recovery plan ready</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 mt-6">
         {/* Active Trips */}
@@ -2027,7 +2091,7 @@ function AddDriverDrawer({ open, onClose, onAdd }: { open: boolean; onClose: () 
 // ============================================================
 
 function TripsPage() {
-  const { state, dispatch, navigate } = useApp();
+  const { state, dispatch, navigate, recoveryHistory, setRecoveryHistory, setDisruptions, setActiveRecoveryDisruption, setShowAutoRescueWorkspace } = useApp();
   const [statusFilter, setStatusFilter] = useState('');
   const [confirmTrip, setConfirmTrip] = useState<{ trip: Trip; action: 'complete' | 'cancel' } | null>(null);
 
@@ -2048,6 +2112,17 @@ function TripsPage() {
       toast.success(`Trip ${trip.id} completed`);
     } else {
       dispatch({ type: 'CANCEL_TRIP', tripId: trip.id, vehicleId: trip.vehicleId, driverId: trip.driverId });
+      const disruption: DisruptionEvent = {
+        id: uid(),
+        type: 'TRIP_CANCELLED',
+        entityId: trip.id,
+        entityName: trip.id,
+        reason: `Trip ${trip.id} was cancelled and requires reassessment`,
+        occurredAt: new Date().toISOString(),
+      };
+      setDisruptions(prev => [disruption, ...prev.filter(item => item.entityId !== trip.id || item.type !== 'TRIP_CANCELLED')]);
+      setActiveRecoveryDisruption(disruption);
+      setShowAutoRescueWorkspace(true);
       toast.success(`Trip ${trip.id} cancelled`);
     }
     setConfirmTrip(null);
@@ -2680,7 +2755,7 @@ function TripDispatcherPage() {
 // ============================================================
 
 function MaintenancePage() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, setDisruptions, setActiveRecoveryDisruption, setShowAutoRescueWorkspace } = useApp();
   const [tab, setTab] = useState('active');
   const [showCreate, setShowCreate] = useState(false);
   const [closeTarget, setCloseTarget] = useState<MaintenanceRecord | null>(null);
@@ -2760,6 +2835,17 @@ function MaintenancePage() {
         onSave={(record) => {
           dispatch({ type: 'CREATE_MAINTENANCE', record });
           const vehicle = state.vehicles.find(v => v.id === record.vehicleId);
+          const disruption: DisruptionEvent = {
+            id: uid(),
+            type: 'VEHICLE_UNAVAILABLE',
+            entityId: record.vehicleId,
+            entityName: vehicle?.name ?? 'Vehicle',
+            reason: `${vehicle?.name ?? 'Vehicle'} entered maintenance`,
+            occurredAt: new Date().toISOString(),
+          };
+          setDisruptions(prev => [disruption, ...prev.filter(item => item.entityId !== record.vehicleId || item.type !== 'VEHICLE_UNAVAILABLE')]);
+          setActiveRecoveryDisruption(disruption);
+          setShowAutoRescueWorkspace(true);
           toast.success(`Maintenance created — ${vehicle?.name ?? ''} moved to In Shop`);
           setShowCreate(false);
         }}
@@ -3330,7 +3416,7 @@ function SettingsPage() {
 // ============================================================
 
 function Router() {
-  const { route, isAuthenticated, authLoading } = useApp();
+  const { route, isAuthenticated, authLoading, activeRecoveryDisruption, showAutoRescueWorkspace, setShowAutoRescueWorkspace, setActiveRecoveryDisruption } = useApp();
 
   if (authLoading) {
     return (
@@ -3346,28 +3432,50 @@ function Router() {
   if (!isAuthenticated || route === 'login') return <LoginPage />;
 
   return (
-    <AppShell>
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={route}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.18, ease: 'easeOut' }}
-        >
-          {route === 'overview' && <OverviewPage />}
-          {route === 'profile' && <ProfilePage />}
-          {route === 'vehicles' && <VehiclesPage />}
-          {route === 'drivers' && <DriversPage />}
-          {route === 'trips' && <TripsPage />}
-          {route === 'trips-new' && <TripDispatcherPage />}
-          {route === 'maintenance' && <MaintenancePage />}
-          {route === 'expenses' && <ExpensesPage />}
-          {route === 'reports' && <ReportsPage />}
-          {route === 'settings' && <SettingsPage />}
-        </motion.div>
-      </AnimatePresence>
-    </AppShell>
+    <>
+      <AppShell>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={route}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+          >
+            {route === 'overview' && <OverviewPage />}
+            {route === 'profile' && <ProfilePage />}
+            {route === 'vehicles' && <VehiclesPage />}
+            {route === 'drivers' && <DriversPage />}
+            {route === 'trips' && <TripsPage />}
+            {route === 'trips-new' && <TripDispatcherPage />}
+            {route === 'maintenance' && <MaintenancePage />}
+            {route === 'expenses' && <ExpensesPage />}
+            {route === 'reports' && <ReportsPage />}
+            {route === 'settings' && <SettingsPage />}
+          </motion.div>
+        </AnimatePresence>
+      </AppShell>
+      {showAutoRescueWorkspace && activeRecoveryDisruption && (
+        <div className="fixed inset-0 z-[70] bg-black/60 p-3 md:p-6">
+          <div className="mx-auto flex h-full max-w-6xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-foreground">AutoRescue Plan</p>
+                <p className="text-xs text-muted-foreground">Operational recovery workspace</p>
+              </div>
+              <button onClick={() => { setShowAutoRescueWorkspace(false); setActiveRecoveryDisruption(null); }} className="rounded border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent">Close</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <AutoRescuePlanPage
+                disruption={activeRecoveryDisruption}
+                onClose={() => { setShowAutoRescueWorkspace(false); setActiveRecoveryDisruption(null); }}
+                onApplied={() => { setShowAutoRescueWorkspace(false); setActiveRecoveryDisruption(null); }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -3379,6 +3487,10 @@ export default function App() {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
+  const [disruptions, setDisruptions] = useState<DisruptionEvent[]>([]);
+  const [recoveryHistory, setRecoveryHistory] = useState<RecoveryHistoryEntry[]>([]);
+  const [activeRecoveryDisruption, setActiveRecoveryDisruption] = useState<DisruptionEvent | null>(null);
+  const [showAutoRescueWorkspace, setShowAutoRescueWorkspace] = useState(false);
 
   const navigate = useCallback((r: Route) => {
     setRoute(r);
@@ -3461,7 +3573,7 @@ export default function App() {
   }, []);
 
   return (
-    <AppContext.Provider value={{ state, dispatch, route, navigate, sidebarOpen, setSidebarOpen, darkMode, toggleDarkMode, user, isAuthenticated, authLoading, login, logout }}>
+    <AppContext.Provider value={{ state, dispatch, route, navigate, sidebarOpen, setSidebarOpen, darkMode, toggleDarkMode, user, isAuthenticated, authLoading, login, logout, disruptions, setDisruptions, recoveryHistory, setRecoveryHistory, activeRecoveryDisruption, setActiveRecoveryDisruption, showAutoRescueWorkspace, setShowAutoRescueWorkspace }}>
       <Router />
       <Toaster
         position="bottom-right"
