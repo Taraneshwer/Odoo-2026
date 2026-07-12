@@ -233,3 +233,469 @@ CREATE TRIGGER update_vehicles_updated_at BEFORE UPDATE ON public.vehicles FOR E
 
 \unrestrict KdN6UWTQ7XpxkaSVc2X4nTK9VaITTbtpKOJTgV70ObqB8uOHlas2GtefhA6zaJM
 
+
+-- ============================================
+-- TABLES 3-7: Drivers, Trips, Maintenance, Fuel, Expenses
+-- ALL FIXES APPLIED - READY TO RUN
+-- ============================================
+
+-- ============================================
+-- TABLE 3: DRIVERS
+-- ============================================
+
+CREATE TABLE drivers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    contact_number VARCHAR(20) NOT NULL,
+    emergency_contact VARCHAR(20),
+    address TEXT,
+    license_number VARCHAR(50) UNIQUE NOT NULL,
+    license_category VARCHAR(50) NOT NULL,
+    license_expiry_date DATE NOT NULL,
+    safety_score INTEGER DEFAULT 100 CHECK (safety_score >= 0 AND safety_score <= 100),
+    total_trips_completed INTEGER DEFAULT 0,
+    total_distance_driven DECIMAL(10,2) DEFAULT 0,
+    harsh_braking_count INTEGER DEFAULT 0,
+    harsh_acceleration_count INTEGER DEFAULT 0,
+    speeding_events INTEGER DEFAULT 0,
+    idling_time_minutes INTEGER DEFAULT 0,
+    smooth_driving_score DECIMAL(5,2),
+    fuel_efficiency_score DECIMAL(5,2),
+    on_time_delivery_rate DECIMAL(5,2),
+    last_performance_calculation DATE,
+    status VARCHAR(50) DEFAULT 'Available' CHECK (status IN ('Available', 'On Trip', 'Off Duty', 'Suspended')),
+    hire_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for drivers
+CREATE INDEX idx_drivers_status ON drivers(status);
+CREATE INDEX idx_drivers_license ON drivers(license_number);
+CREATE INDEX idx_drivers_license_expiry ON drivers(license_expiry_date);
+CREATE INDEX idx_drivers_safety_score ON drivers(safety_score);
+CREATE INDEX idx_drivers_user_id ON drivers(user_id);
+
+-- Trigger for drivers
+CREATE TRIGGER update_drivers_updated_at 
+    BEFORE UPDATE ON drivers 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+
+-- ============================================
+-- TABLE 4: TRIPS
+-- ============================================
+
+CREATE TABLE trips (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_number VARCHAR(50) UNIQUE NOT NULL,
+    source VARCHAR(255) NOT NULL,
+    source_lat DECIMAL(10,8),
+    source_lng DECIMAL(11,8),
+    destination VARCHAR(255) NOT NULL,
+    destination_lat DECIMAL(10,8),
+    destination_lng DECIMAL(11,8),
+    vehicle_id UUID REFERENCES vehicles(id),
+    driver_id UUID REFERENCES drivers(id),
+    cargo_description TEXT,
+    cargo_weight DECIMAL(10,2) NOT NULL,
+    cargo_value DECIMAL(10,2),
+    planned_distance DECIMAL(10,2) NOT NULL,
+    actual_distance DECIMAL(10,2),
+    fuel_consumed DECIMAL(10,2),
+    fuel_efficiency DECIMAL(10,2),
+    status VARCHAR(50) DEFAULT 'Draft' CHECK (status IN ('Draft', 'Dispatched', 'In Progress', 'Completed', 'Cancelled', 'Delayed')),
+    priority VARCHAR(20) DEFAULT 'Normal' CHECK (priority IN ('Low', 'Normal', 'High', 'Urgent')),
+    dispatched_at TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    estimated_arrival TIMESTAMP,
+    actual_arrival TIMESTAMP,
+    delay_minutes INTEGER DEFAULT 0,
+    notes TEXT,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for trips
+CREATE INDEX idx_trips_status ON trips(status);
+CREATE INDEX idx_trips_vehicle_id ON trips(vehicle_id);
+CREATE INDEX idx_trips_driver_id ON trips(driver_id);
+CREATE INDEX idx_trips_created_at ON trips(created_at);
+CREATE INDEX idx_trips_trip_number ON trips(trip_number);
+CREATE INDEX idx_trips_priority ON trips(priority);
+CREATE INDEX idx_trips_dates ON trips(dispatched_at, completed_at);
+
+-- Triggers for trips
+CREATE TRIGGER update_trips_updated_at 
+    BEFORE UPDATE ON trips 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER generate_trip_number_trigger 
+    BEFORE INSERT ON trips 
+    FOR EACH ROW 
+    EXECUTE FUNCTION generate_trip_number();
+
+CREATE TRIGGER validate_trip_assignment_trigger
+    BEFORE INSERT ON trips
+    FOR EACH ROW
+    EXECUTE FUNCTION validate_trip_assignment();
+
+CREATE TRIGGER update_driver_stats_trigger 
+    AFTER UPDATE ON trips 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_driver_stats();
+
+
+-- ============================================
+-- TABLE 5: MAINTENANCE LOGS
+-- ============================================
+
+CREATE TABLE maintenance_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vehicle_id UUID REFERENCES vehicles(id) NOT NULL,
+    maintenance_type VARCHAR(100) NOT NULL,
+    description TEXT,
+    cost DECIMAL(10,2),
+    status VARCHAR(50) DEFAULT 'Scheduled' CHECK (status IN ('Scheduled', 'In Progress', 'Completed', 'Cancelled')),
+    scheduled_date DATE NOT NULL,
+    started_date DATE,
+    completed_date DATE,
+    performed_by VARCHAR(255),
+    notes TEXT,
+    parts_used JSONB,
+    odometer_at_service DECIMAL(10,2),
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for maintenance_logs
+CREATE INDEX idx_maintenance_vehicle_id ON maintenance_logs(vehicle_id);
+CREATE INDEX idx_maintenance_status ON maintenance_logs(status);
+CREATE INDEX idx_maintenance_scheduled_date ON maintenance_logs(scheduled_date);
+
+-- Triggers for maintenance_logs
+CREATE TRIGGER update_maintenance_logs_updated_at 
+    BEFORE UPDATE ON maintenance_logs 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_vehicle_maintenance_status_trigger
+    AFTER INSERT OR UPDATE ON maintenance_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_vehicle_maintenance_status();
+
+
+-- ============================================
+-- TABLE 6: FUEL LOGS
+-- ============================================
+
+CREATE TABLE fuel_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vehicle_id UUID REFERENCES vehicles(id) NOT NULL,
+    trip_id UUID REFERENCES trips(id),
+    liters DECIMAL(10,2) NOT NULL,
+    cost_per_liter DECIMAL(10,2) NOT NULL,
+    total_cost DECIMAL(10,2) NOT NULL,
+    fuel_type VARCHAR(50) DEFAULT 'Diesel',
+    odometer_reading DECIMAL(10,2) NOT NULL,
+    station_name VARCHAR(255),
+    station_location VARCHAR(255),
+    date DATE NOT NULL,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for fuel_logs
+CREATE INDEX idx_fuel_vehicle_id ON fuel_logs(vehicle_id);
+CREATE INDEX idx_fuel_trip_id ON fuel_logs(trip_id);
+CREATE INDEX idx_fuel_date ON fuel_logs(date);
+CREATE INDEX idx_fuel_odometer ON fuel_logs(odometer_reading);
+
+-- Triggers for fuel_logs
+CREATE TRIGGER calculate_fuel_total_cost_trigger
+    BEFORE INSERT OR UPDATE ON fuel_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION calculate_fuel_total_cost();
+
+
+-- ============================================
+-- TABLE 7: EXPENSES
+-- ============================================
+
+CREATE TABLE expenses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vehicle_id UUID REFERENCES vehicles(id) NOT NULL,
+    trip_id UUID REFERENCES trips(id),
+    expense_type VARCHAR(50) NOT NULL CHECK (expense_type IN ('Toll', 'Parking', 'Repair', 'Insurance', 'Registration', 'Other')),
+    description TEXT,
+    amount DECIMAL(10,2) NOT NULL,
+    date DATE NOT NULL,
+    receipt_image VARCHAR(255),
+    notes TEXT,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for expenses
+CREATE INDEX idx_expenses_vehicle_id ON expenses(vehicle_id);
+CREATE INDEX idx_expenses_trip_id ON expenses(trip_id);
+CREATE INDEX idx_expenses_date ON expenses(date);
+CREATE INDEX idx_expenses_type ON expenses(expense_type);
+
+-- Triggers for expenses
+CREATE TRIGGER update_expenses_updated_at 
+    BEFORE UPDATE ON expenses 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+
+-- ============================================
+-- SAMPLE DATA (All Fixed)
+-- ============================================
+
+-- Insert a sample driver with FUTURE expiry date (FIXED)
+INSERT INTO drivers (
+    name,
+    contact_number,
+    license_number,
+    license_category,
+    license_expiry_date,
+    status
+) VALUES (
+    'Rajesh Kumar',
+    '9876543210',
+    'DL-1234567890',
+    'LMV',
+    '2027-12-31',
+    'Available'
+);
+
+-- Insert a sample trip
+INSERT INTO trips (
+    source,
+    destination,
+    vehicle_id,
+    driver_id,
+    cargo_weight,
+    planned_distance,
+    status,
+    created_by
+) VALUES (
+    'Mumbai',
+    'Pune',
+    (SELECT id FROM vehicles WHERE registration_number = 'MH-01-AB-1234'),
+    (SELECT id FROM drivers WHERE license_number = 'DL-1234567890'),
+    250.00,
+    150.00,
+    'Draft',
+    (SELECT id FROM users WHERE email = 'admin@transitops.com')
+);
+
+-- Insert a sample maintenance log
+INSERT INTO maintenance_logs (
+    vehicle_id,
+    maintenance_type,
+    description,
+    cost,
+    scheduled_date,
+    status
+) VALUES (
+    (SELECT id FROM vehicles WHERE registration_number = 'MH-01-AB-1234'),
+    'Oil Change',
+    'Regular oil change and filter replacement',
+    3500.00,
+    CURRENT_DATE + INTERVAL '30 days',
+    'Scheduled'
+);
+
+-- Insert a sample fuel log
+INSERT INTO fuel_logs (
+    vehicle_id,
+    liters,
+    cost_per_liter,
+    total_cost,
+    odometer_reading,
+    date
+) VALUES (
+    (SELECT id FROM vehicles WHERE registration_number = 'MH-01-AB-1234'),
+    50.00,
+    95.00,
+    4750.00,
+    5000.00,
+    CURRENT_DATE
+);
+
+-- Insert sample expenses
+INSERT INTO expenses (
+    vehicle_id,
+    expense_type,
+    description,
+    amount,
+    date
+) VALUES (
+    (SELECT id FROM vehicles WHERE registration_number = 'MH-01-AB-1234'),
+    'Toll',
+    'Mumbai-Pune toll plaza',
+    250.00,
+    CURRENT_DATE
+);
+
+INSERT INTO expenses (
+    vehicle_id,
+    expense_type,
+    description,
+    amount,
+    date
+) VALUES (
+    (SELECT id FROM vehicles WHERE registration_number = 'MH-01-AB-1234'),
+    'Parking',
+    'Pune warehouse parking',
+    100.00,
+    CURRENT_DATE
+);
+
+
+-- ============================================
+-- VERIFICATION QUERIES (FIXED - No Ambiguous Columns)
+-- ============================================
+
+-- 1. Check all tables exist
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public' 
+ORDER BY table_name;
+
+-- 2. Check row counts
+SELECT 'users' as table_name, COUNT(*) as count FROM users
+UNION ALL
+SELECT 'vehicles', COUNT(*) FROM vehicles
+UNION ALL
+SELECT 'drivers', COUNT(*) FROM drivers
+UNION ALL
+SELECT 'trips', COUNT(*) FROM trips
+UNION ALL
+SELECT 'maintenance_logs', COUNT(*) FROM maintenance_logs
+UNION ALL
+SELECT 'fuel_logs', COUNT(*) FROM fuel_logs
+UNION ALL
+SELECT 'expenses', COUNT(*) FROM expenses;
+
+-- 3. Show all drivers
+SELECT * FROM drivers;
+
+-- 4. Show all trips
+SELECT * FROM trips;
+
+-- 5. Show all maintenance logs
+SELECT * FROM maintenance_logs;
+
+-- 6. Show all fuel logs
+SELECT * FROM fuel_logs;
+
+-- 7. Show all expenses
+SELECT * FROM expenses;
+
+-- 8. Verify driver license validity
+SELECT 
+    name, 
+    license_number, 
+    license_expiry_date,
+    CASE 
+        WHEN license_expiry_date > CURRENT_DATE THEN 'VALID ✅'
+        ELSE 'EXPIRED ❌'
+    END as license_status,
+    status as driver_status
+FROM drivers;
+
+-- 9. Verify trips with vehicle and driver details (FIXED - No ambiguity)
+SELECT 
+    t.trip_number,
+    t.source,
+    t.destination,
+    t.cargo_weight,
+    t.planned_distance,
+    t.status as trip_status,
+    t.priority,
+    v.registration_number,
+    v.name as vehicle_name,
+    v.status as vehicle_status,
+    d.name as driver_name,
+    d.license_number,
+    d.license_expiry_date,
+    d.status as driver_status
+FROM trips t
+LEFT JOIN vehicles v ON t.vehicle_id = v.id
+LEFT JOIN drivers d ON t.driver_id = d.id
+ORDER BY t.created_at DESC;
+
+-- 10. Check for any data issues
+SELECT 
+    COUNT(*) as total_trips,
+    COUNT(CASE WHEN t.vehicle_id IS NULL THEN 1 END) as trips_without_vehicle,
+    COUNT(CASE WHEN t.driver_id IS NULL THEN 1 END) as trips_without_driver,
+    COUNT(CASE WHEN t.status = 'Draft' THEN 1 END) as draft_trips,
+    COUNT(CASE WHEN t.status = 'Completed' THEN 1 END) as completed_trips
+FROM trips t;
+
+-- 11. Show maintenance summary
+SELECT 
+    v.name as vehicle_name,
+    COUNT(m.id) as maintenance_count,
+    COALESCE(SUM(m.cost), 0) as total_maintenance_cost,
+    m.status as maintenance_status
+FROM maintenance_logs m
+JOIN vehicles v ON m.vehicle_id = v.id
+GROUP BY v.name, m.status
+ORDER BY v.name;
+
+-- 12. Show fuel summary
+SELECT 
+    v.name as vehicle_name,
+    COUNT(f.id) as fuel_logs_count,
+    COALESCE(SUM(f.liters), 0) as total_liters,
+    COALESCE(SUM(f.total_cost), 0) as total_fuel_cost,
+    ROUND(COALESCE(AVG(f.cost_per_liter), 0), 2) as avg_cost_per_liter
+FROM fuel_logs f
+JOIN vehicles v ON f.vehicle_id = v.id
+GROUP BY v.name
+ORDER BY v.name;
+
+-- 13. Show expense summary by type
+SELECT 
+    expense_type,
+    COUNT(*) as expense_count,
+    COALESCE(SUM(amount), 0) as total_amount,
+    ROUND(COALESCE(AVG(amount), 0), 2) as avg_amount
+FROM expenses
+GROUP BY expense_type
+ORDER BY total_amount DESC;
+
+-- 14. Complete fleet overview
+SELECT 
+    v.name as vehicle_name,
+    v.registration_number,
+    v.status as vehicle_status,
+    COUNT(DISTINCT t.id) as total_trips,
+    COALESCE(SUM(f.liters), 0) as total_fuel_used,
+    COALESCE(SUM(f.total_cost), 0) as total_fuel_cost,
+    COALESCE(SUM(e.amount), 0) as total_other_expenses,
+    COALESCE(SUM(m.cost), 0) as total_maintenance_cost
+FROM vehicles v
+LEFT JOIN trips t ON v.id = t.vehicle_id
+LEFT JOIN fuel_logs f ON v.id = f.vehicle_id
+LEFT JOIN expenses e ON v.id = e.vehicle_id
+LEFT JOIN maintenance_logs m ON v.id = m.vehicle_id
+GROUP BY v.name, v.registration_number, v.status
+ORDER BY v.name;
+
+-- ============================================
+-- END OF TABLES 3-7
+-- ============================================
+
