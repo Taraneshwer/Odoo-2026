@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Route, Users, Shield, BarChart3, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Route, Users, Shield, BarChart3, Eye, EyeOff, AlertCircle, Truck } from 'lucide-react';
 import BrandLogo from '../ui/BrandLogo';
 import { authService, isMockMode } from '../../../services/authService';
 
